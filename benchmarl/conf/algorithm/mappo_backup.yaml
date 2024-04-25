@@ -2,7 +2,7 @@ defaults:
   - mappo_config
   - _self_
 
-# 应为“FCMNet”
+
 
 share_param_critic: True
 clip_epsilon: 0.2

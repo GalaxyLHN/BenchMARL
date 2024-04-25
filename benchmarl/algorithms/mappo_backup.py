@@ -73,7 +73,7 @@ class Mappo(Algorithm):
     def _get_loss(
         self, group: str, policy_for_loss: TensorDictModule, continuous: bool
     ) -> Tuple[LossModule, bool]:
-        # 创建Loss实例
+        # Loss
         loss_module = ClipPPOLoss(
             actor=policy_for_loss,
             critic=self.get_critic(group),
@@ -83,7 +83,6 @@ class Mappo(Algorithm):
             loss_critic_type=self.loss_critic_type,
             normalize_advantage=False,
         )
-        # 设置Loss使用的键，为不同智能体分组保存不同的键
         loss_module.set_keys(
             reward=(group, "reward"),
             action=(group, "action"),
@@ -94,7 +93,6 @@ class Mappo(Algorithm):
             value=(group, "state_value"),
             sample_log_prob=(group, "log_prob"),
         )
-        # 选用值估计器
         loss_module.make_value_estimator(
             ValueEstimators.GAE, gamma=self.experiment_config.gamma, lmbda=self.lmbda
         )
@@ -110,8 +108,6 @@ class Mappo(Algorithm):
         self, group: str, model_config: ModelConfig, continuous: bool
     ) -> TensorDictModule:
         n_agents = len(self.group_map[group])
-        
-        # 根据动作空间类型创建不同的策略
         if continuous:
             logits_shape = list(self.action_spec[group, "action"].shape)
             logits_shape[-1] *= 2
@@ -121,7 +117,6 @@ class Mappo(Algorithm):
                 self.action_spec[group, "action"].space.n,
             ]
 
-        # 输入格式
         actor_input_spec = CompositeSpec(
             {
                 group: CompositeSpec(
@@ -135,7 +130,6 @@ class Mappo(Algorithm):
             }
         )
 
-        # 输出格式
         actor_output_spec = CompositeSpec(
             {
                 group: CompositeSpec(
@@ -144,8 +138,6 @@ class Mappo(Algorithm):
                 )
             }
         )
-        
-        # 根据上述格式创建神经网络
         actor_module = model_config.get_model(
             input_spec=actor_input_spec,
             output_spec=actor_output_spec,
@@ -159,35 +151,30 @@ class Mappo(Algorithm):
         )
 
         if continuous:
-            # 连续动作的概率模型
             extractor_module = TensorDictModule(
                 NormalParamExtractor(scale_mapping=self.scale_mapping),
                 in_keys=[(group, "logits")],
                 out_keys=[(group, "loc"), (group, "scale")],
             )
-            # ** 创建返回的策略 **
             policy = ProbabilisticActor(
                 module=TensorDictSequential(actor_module, extractor_module),
                 spec=self.action_spec[group, "action"],
                 in_keys=[(group, "loc"), (group, "scale")],
                 out_keys=[(group, "action")],
-                distribution_class=(
-                    IndependentNormal if not self.use_tanh_normal else TanhNormal
-                ),
-                distribution_kwargs=(
-                    {
-                        "min": self.action_spec[(group, "action")].space.low,
-                        "max": self.action_spec[(group, "action")].space.high,
-                    }
-                    if self.use_tanh_normal
-                    else {}
-                ),
+                distribution_class=IndependentNormal
+                if not self.use_tanh_normal
+                else TanhNormal,
+                distribution_kwargs={
+                    "min": self.action_spec[(group, "action")].space.low,
+                    "max": self.action_spec[(group, "action")].space.high,
+                }
+                if self.use_tanh_normal
+                else {},
                 return_log_prob=True,
                 log_prob_key=(group, "log_prob"),
             )
 
         else:
-            # ** 创建返回的策略 **
             if self.action_mask_spec is None:
                 policy = ProbabilisticActor(
                     module=actor_module,
@@ -204,7 +191,6 @@ class Mappo(Algorithm):
                     spec=self.action_spec[group, "action"],
                     in_keys={
                         "logits": (group, "logits"),
-                        # 引入动作掩码（若存在）
                         "mask": (group, "action_mask"),
                     },
                     out_keys=[(group, "action")],
@@ -222,7 +208,6 @@ class Mappo(Algorithm):
         return policy_for_loss
 
     def process_batch(self, group: str, batch: TensorDictBase) -> TensorDictBase:
-        # 处理从环境中收集到的数据
         keys = list(batch.keys(True, True))
         group_shape = batch.get(group).shape
 
@@ -230,7 +215,6 @@ class Mappo(Algorithm):
         nested_terminated_key = ("next", group, "terminated")
         nested_reward_key = ("next", group, "reward")
 
-        # 传导flags
         if nested_done_key not in keys:
             batch.set(
                 nested_done_key,
@@ -243,13 +227,13 @@ class Mappo(Algorithm):
                 .unsqueeze(-1)
                 .expand((*group_shape, 1)),
             )
+
         if nested_reward_key not in keys:
             batch.set(
                 nested_reward_key,
                 batch.get(("next", "reward")).unsqueeze(-1).expand((*group_shape, 1)),
             )
 
-        # 估计loss
         with torch.no_grad():
             loss = self.get_loss_and_updater(group)[0]
             loss.value_estimator(
@@ -263,7 +247,6 @@ class Mappo(Algorithm):
     def process_loss_vals(
         self, group: str, loss_vals: TensorDictBase
     ) -> TensorDictBase:
-        # loss=目标loss+熵，删除熵
         loss_vals.set(
             "loss_objective", loss_vals["loss_objective"] + loss_vals["loss_entropy"]
         )
@@ -275,9 +258,8 @@ class Mappo(Algorithm):
     #####################
 
     def get_critic(self, group: str) -> TensorDictModule:
-        n_agents = len(self.group_map[group]) # 智能体个数
+        n_agents = len(self.group_map[group])
         if self.share_param_critic:
-            # 根据是否共享参数设置输出维度
             critic_output_spec = CompositeSpec(
                 {"state_value": UnboundedContinuousTensorSpec(shape=(1,))}
             )
@@ -295,7 +277,6 @@ class Mappo(Algorithm):
                 }
             )
 
-        # 构建评论家模型
         if self.state_spec is not None:
             value_module = self.critic_model_config.get_model(
                 input_spec=self.state_spec,
@@ -308,6 +289,7 @@ class Mappo(Algorithm):
                 device=self.device,
                 action_spec=self.action_spec,
             )
+
         else:
             critic_input_spec = CompositeSpec(
                 {
@@ -332,8 +314,6 @@ class Mappo(Algorithm):
                 device=self.device,
                 action_spec=self.action_spec,
             )
-            
-        # 共享参数
         if self.share_param_critic:
             expand_module = TensorDictModule(
                 lambda value: value.unsqueeze(-2).expand(
